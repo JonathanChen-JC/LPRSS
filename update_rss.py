@@ -28,7 +28,18 @@ class RSSUpdater:
             # 解析XML文件
             tree = ET.parse(self.feed_path)
             root = tree.getroot()
+            channel = root.find('channel')
             
+            # 优先检查自定义的 latestArticleId 标签
+            latest_id_elem = channel.find('latestArticleId')
+            if latest_id_elem is not None and latest_id_elem.text:
+                try:
+                    latest_id = int(latest_id_elem.text)
+                    logger.info(f"从feed.xml元数据获取到的最新文章ID: {latest_id}")
+                    return latest_id
+                except ValueError:
+                    logger.warning("latestArticleId格式错误")
+
             # 查找所有链接
             links = root.findall('.//item/link')
             
@@ -78,8 +89,39 @@ class RSSUpdater:
             # 更新lastBuildDate
             last_build_date = channel.find('lastBuildDate')
             now = datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000')
-            last_build_date.text = now
+            if last_build_date is not None:
+                last_build_date.text = now
+            else:
+                 last_build_date = ET.SubElement(channel, 'lastBuildDate')
+                 last_build_date.text = now
             
+            # 维护自定义的 latestArticleId 标签
+            latest_id_elem = channel.find('latestArticleId')
+            current_max_id = 0
+            if new_article_ids:
+                current_max_id = max(new_article_ids)
+            
+            # 如果存在现有标签，读取并比较
+            if latest_id_elem is not None and latest_id_elem.text:
+                try:
+                    existing_id = int(latest_id_elem.text)
+                    current_max_id = max(current_max_id, existing_id)
+                except ValueError:
+                    pass
+            elif not latest_id_elem:
+                # 创建新标签
+                latest_id_elem = ET.SubElement(channel, 'latestArticleId')
+            
+            # 确保最新ID也会考虑现有RSS中的ID（以防回滚）
+            # 但既然我们用这个标签作为High Water Mark，就只增不减
+            
+            # 如果RSS里还有比current_max_id更大的ID? (比如 manual edit)
+            # 我们通过get_latest_article_id读取过
+            
+            # 更新标签值
+            if current_max_id > 0:
+                latest_id_elem.text = str(current_max_id)
+
             # 添加新文章
             articles_added = 0
             for article_id in new_article_ids:
