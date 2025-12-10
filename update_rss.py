@@ -1,7 +1,7 @@
 import os
 import logging
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from persistence import GitRepository
 
@@ -127,21 +127,17 @@ class RSSUpdater:
                 # 添加发布日期
                 pubdate_elem = ET.SubElement(item, 'pubDate')
                 try:
-                    # 尝试解析中文日期格式并转换为RSS标准格式
-                    date_parts = publish_date.split(' ')
-                    if len(date_parts) >= 2:
-                        date_str = date_parts[0].replace('月', '/').replace('日', '')
-                        time_str = date_parts[1]
-                        dt = datetime.strptime(f"{date_str} {time_str}", "%m/%d %H:%M")
-                        # 使用当前年份
-                        current_year = datetime.now().year
-                        dt = dt.replace(year=current_year)
+                    dt = self._parse_date_str(publish_date)
+                    if dt:
                         pubdate_elem.text = dt.strftime('%a, %d %b %Y %H:%M:%S +0000')
                     else:
-                        pubdate_elem.text = now  # 使用当前时间作为后备
+                        logger.warning(f"无法解析日期: {publish_date}，使用当前时间")
+                        pubdate_elem.text = now
                 except Exception as e:
                     logger.warning(f"日期解析失败: {str(e)}，使用当前时间")
                     pubdate_elem.text = now
+
+
                 
                 # 添加GUID
                 guid_elem = ET.SubElement(item, 'guid')
@@ -157,27 +153,34 @@ class RSSUpdater:
                 items_with_dates = []
                 for item in items:
                     pubdate = item.find('pubDate')
+                    title = item.find('title')
+                    title_text = title.text if title is not None else "未知标题"
+                    
                     if pubdate is not None and pubdate.text:
                         try:
+                            # 尝试解析RSS标准格式
                             dt = datetime.strptime(pubdate.text, '%a, %d %b %Y %H:%M:%S +0000')
                             items_with_dates.append((dt, item))
-                        except Exception:
-                            # 如果日期解析失败，假设是最新的文章
+                        except Exception as e:
+                            logger.warning(f"排序时解析日期失败: {pubdate.text} ({title_text}), 错误: {e}")
+                            # 如果解析失败，为了安全起见，假设它是现在的（保留它），除非它真的很旧
                             items_with_dates.append((datetime.now(), item))
                     else:
                         # 如果没有日期，假设是最新的文章
                         items_with_dates.append((datetime.now(), item))
                 
-                # 按日期排序
+                # 按日期排序 (Oldest first)
                 items_with_dates.sort(key=lambda x: x[0])
                 
                 # 删除最旧的文章
                 items_to_remove = len(items) - self.max_items
-                for _, item in items_with_dates[:items_to_remove]:
-                    title_elem = item.find('title')
-                    title_text = title_elem.text if title_elem is not None else "未知标题"
-                    logger.info(f"删除旧文章: {title_text}")
-                    channel.remove(item)
+                if items_to_remove > 0:
+                    logger.info(f"需要删除 {items_to_remove} 篇旧文章 (总数: {len(items)}, 最大: {self.max_items})")
+                    for dt, item in items_with_dates[:items_to_remove]:
+                        title_elem = item.find('title')
+                        title_text = title_elem.text if title_elem is not None else "未知标题"
+                        logger.info(f"删除旧文章: {title_text} (发布日期: {dt})")
+                        channel.remove(item)
             
             # 保存更新后的feed.xml
             tree.write(self.feed_path, encoding='utf-8', xml_declaration=True)
@@ -270,6 +273,74 @@ class RSSUpdater:
         except Exception as e:
             logger.error(f"同步到Git仓库时出错: {str(e)}")
             return False
+    
+    def _parse_date_str(self, date_str):
+        """解析多种格式的日期字符串"""
+        try:
+            now = datetime.now()
+            current_year = now.year
+            
+            if not date_str or date_str == "未知日期":
+                return None
+
+            # 处理 "昨天 HH:MM"
+            if '昨天' in date_str:
+                dt = now - timedelta(days=1)
+                time_part = date_str.replace('昨天', '').strip()
+                if time_part:
+                    try:
+                        t = datetime.strptime(time_part, "%H:%M").time()
+                        dt = datetime.combine(dt.date(), t)
+                    except ValueError:
+                        pass 
+                return dt
+            
+            # 处理 "今天 HH:MM"
+            if '今天' in date_str:
+                dt = now
+                time_part = date_str.replace('今天', '').strip()
+                if time_part:
+                    try:
+                        t = datetime.strptime(time_part, "%H:%M").time()
+                        dt = datetime.combine(dt.date(), t)
+                    except ValueError:
+                        pass
+                return dt
+
+            # 尝试标准格式
+            # 移除 '月', '日' 等字符
+            clean_str = date_str.replace('月', '/').replace('日', '').strip()
+            
+            formats = [
+                "%m/%d %H:%M",
+                "%Y/%m/%d %H:%M",
+                "%Y-%m-%d %H:%M",
+                "%Y-%m-%d", 
+                "%H:%M" # 仅时间?
+            ]
+            
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(clean_str, fmt)
+                    # 如果只有月日，加上年份
+                    if dt.year == 1900:
+                        dt = dt.replace(year=current_year)
+                        # 如果算出的是未来时间(比如12月在1月跑), 可能是去年的
+                        if dt > now + timedelta(days=1):
+                             dt = dt.replace(year=current_year - 1)
+                    # 如果只有时间，加上年月日
+                    if fmt == "%H:%M":
+                        dt = datetime.combine(now.date(), dt.time())
+                        
+                    return dt
+                except ValueError:
+                    continue
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"日期解析内部错误: {e}")
+            return None
 
 # 如果直接运行此脚本
 if __name__ == "__main__":

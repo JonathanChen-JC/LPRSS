@@ -103,24 +103,20 @@ class GitRepository:
                 cwd=repo_dir
             )
             
-            # 推送到远程仓库
+            # 推送到远程仓库 (Default to main)
+            # Increase buffer size to handle larger pushes if needed
+            self._run_git_command(['git', 'config', 'http.postBuffer', '524288000'], cwd=repo_dir)
+
             push_result = self._run_git_command(
                 ['git', 'push', 'origin', 'main'],
                 cwd=repo_dir
             )
             
-            if push_result is None:
-                # 尝试master分支
-                push_result = self._run_git_command(
-                    ['git', 'push', 'origin', 'master'],
-                    cwd=repo_dir
-                )
-            
             success = push_result is not None
             if success:
-                logger.info("成功推送feed.xml到Git仓库")
+                logger.info("成功推送feed.xml到Git仓库 (main)")
             else:
-                logger.error("推送feed.xml到Git仓库失败")
+                logger.error("推送feed.xml到Git仓库失败 (main)")
             
             return success
         
