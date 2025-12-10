@@ -51,7 +51,7 @@ class GitRepository:
             logger.error(f"Git命令执行失败: {e.stderr}")
             return None
     
-    def clone_repository(self):
+    def clone_repository(self, branch='main'):
         """克隆仓库到临时目录"""
         if not self.auth_repo_url:
             logger.error("未配置有效的Git仓库URL")
@@ -59,12 +59,19 @@ class GitRepository:
         
         # 创建临时目录
         temp_dir = tempfile.mkdtemp(prefix="git_repo_")
-        logger.info(f"克隆仓库到临时目录: {temp_dir}")
+        logger.info(f"克隆仓库到临时目录: {temp_dir} (branch: {branch})")
         
-        # 克隆仓库
-        result = self._run_git_command(
-            ['git', 'clone', self.auth_repo_url, temp_dir]
-        )
+        # 克隆仓库 - try specific branch
+        cmd = ['git', 'clone', '-b', branch, self.auth_repo_url, temp_dir]
+        result = self._run_git_command(cmd)
+        
+        # If branch specific clone fails, try default clone (maybe branch doesn't exist yet but will be created?)
+        # But for 'get_remote_search' we assume it exists. For push, we might want to create it.
+        # However, user says main/master mismatch. Let's start with strict branch mapping.
+        if result is None:
+             logger.warning(f"克隆分支 {branch} 失败，尝试默认克隆")
+             cmd = ['git', 'clone', self.auth_repo_url, temp_dir]
+             result = self._run_git_command(cmd)
         
         if result is None:
             logger.error("克隆仓库失败")
@@ -83,8 +90,8 @@ class GitRepository:
             logger.error(f"feed文件不存在: {feed_path}")
             return False
         
-        # 克隆仓库
-        repo_dir = self.clone_repository()
+        # 克隆仓库 (Force main)
+        repo_dir = self.clone_repository(branch='main')
         if not repo_dir:
             return False
         
@@ -98,17 +105,21 @@ class GitRepository:
             
             # 提交更改
             commit_message = f"更新RSS feed - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            self._run_git_command(
+            commit_result = self._run_git_command(
                 ['git', 'commit', '-m', commit_message],
                 cwd=repo_dir
             )
             
-            # 推送到远程仓库 (Default to main)
+            if commit_result is None:
+                # nothing to commit possibly?
+                pass
+
+            # 推送到远程仓库 (Push current HEAD to main explicit)
             # Increase buffer size to handle larger pushes if needed
             self._run_git_command(['git', 'config', 'http.postBuffer', '524288000'], cwd=repo_dir)
 
             push_result = self._run_git_command(
-                ['git', 'push', 'origin', 'main'],
+                ['git', 'push', 'origin', 'HEAD:main'],
                 cwd=repo_dir
             )
             
@@ -126,8 +137,8 @@ class GitRepository:
     
     def get_remote_feed(self):
         """从远程仓库获取feed.xml文件"""
-        # 克隆仓库
-        repo_dir = self.clone_repository()
+        # 克隆仓库 (Force main)
+        repo_dir = self.clone_repository(branch='main')
         if not repo_dir:
             return None
         
